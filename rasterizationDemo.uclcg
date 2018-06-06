@@ -1,0 +1,899 @@
+function setup()
+{
+	UI = {};
+	UI.tabs = [];
+	UI.titleLong = 'Rasterization Demo';
+	UI.titleShort = 'rasterizationDemo';
+	UI.numFrames = 1000;
+	UI.maxFPS = 24;
+	UI.renderWidth = 800;
+	UI.renderHeight = 400;
+
+	UI.tabs.push(
+		{
+		visible: true,
+		type: `x-shader/x-fragment`,
+		title: `Rasterization`,
+		id: `RasterizationDemoFS`,
+		initialValue: `#define PROJECTION
+#define RASTERIZATION
+#define CLIPPING
+#define INTERPOLATION
+#define ZBUFFERING
+//#define ANIMATION
+
+precision highp float;
+uniform float time;
+
+// Polygon / vertex functionality
+const int MAX_VERTEX_COUNT = 8;
+
+uniform ivec2 viewport;
+
+struct Vertex {
+    vec3 position;
+    vec3 color;
+};
+
+struct Polygon {
+    // Numbers of vertices, i.e., points in the polygon
+    int vertexCount;
+    // The vertices themselves
+    Vertex vertices[MAX_VERTEX_COUNT];
+};
+
+// Appends a vertex to a polygon
+void appendVertexToPolygon(inout Polygon polygon, Vertex element) {
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i == polygon.vertexCount) {
+            polygon.vertices[i] = element;
+        }
+    }
+    polygon.vertexCount++;
+}
+
+// Copy Polygon source to Polygon destination
+void copyPolygon(inout Polygon destination, Polygon source) {
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        destination.vertices[i] = source.vertices[i];
+    }
+    destination.vertexCount = source.vertexCount;
+}
+
+// Get the i-th vertex from a polygon, but when asking for the one behind the last, get the first again
+Vertex getWrappedPolygonVertex(Polygon polygon, int index) {
+    if (index >= polygon.vertexCount) index -= polygon.vertexCount;
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i == index) return polygon.vertices[i];
+    }
+}
+
+// Creates an empty polygon
+void makeEmptyPolygon(out Polygon polygon) {
+  polygon.vertexCount = 0;
+}
+
+// Because the edge method is used in many parts of the code
+// I moved everything up here.
+#define INNER_SIDE 0
+#define OUTER_SIDE 1
+
+// Assuming a clockwise (vertex-wise) polygon, returns whether the input point 
+// is on the inner or outer side of the edge (ab)
+int edge(vec2 point, Vertex a, Vertex b) {
+    #ifdef RASTERIZATION
+  
+  		mat2 matrix;
+  		matrix[0][0] = point[0] - a.position[0];
+        matrix[0][1] = b.position[0] - a.position[0];
+        matrix[1][0] = point[1] - a.position[1];
+        matrix[1][1] = b.position[1] - a.position[1];
+        float determinant = matrix[0][1]*matrix[1][0] - matrix[1][1]*matrix[0][0];
+        return determinant >= 0.0 ? OUTER_SIDE:  INNER_SIDE ;
+        
+    #endif
+        return OUTER_SIDE;
+}
+
+
+// Clipping part
+
+#define ENTERING 2
+#define LEAVING  3
+#define OUTSIDE  4
+#define INSIDE   5
+
+int getCrossType(Vertex poli1, Vertex poli2, Vertex wind1, Vertex wind2) {
+    #ifdef CLIPPING
+  		/*
+        This method identify in which of the four cases we are in the clipping 
+        task. We have 2 Vertecies of the polygon and 2 Vertecies of the window
+        we see for each vertex of the polygon on which side of the line (passing 
+        trough the two window points) lies.
+        */
+  		float x_1 = poli1.position.x, y_1 = poli1.position.y;
+        float x_2 = poli2.position.x, y_2 = poli2.position.y;
+ 		
+  		vec2 poli1_point = vec2(x_1, y_1);
+  		vec2 poli2_point = vec2(x_2, y_2);
+  
+  		int pos1 = edge(poli1_point, wind1, wind2);
+  		int pos2 = edge(poli2_point, wind1, wind2);
+  
+  		if (pos1 ==  0  && pos2 == 0)
+        	return INSIDE;
+  		if (pos1 == 1   && pos2 == 0)
+        	return ENTERING;
+ 		if (pos1 == 0   && pos2 == 1)
+  			return LEAVING ;
+  
+  		return OUTSIDE;
+    #else
+        return INSIDE;
+    #endif
+}
+
+// This function assumes that the segments are not parallel or collinear.
+Vertex intersect2D(Vertex a, Vertex b, Vertex c, Vertex d) {
+    #ifdef CLIPPING
+  		// We have two lines difineds such as a---b and c---d
+  		// And we want to compute the intersection between these two.
+		float d1 = b.position[0]*a.position[1] - a.position[0]*b.position[1];
+  		float d2 = d.position[0]-c.position[0];
+        float d3 = b.position[0]-a.position[0];
+        float d4 = d.position[0]*c.position[1] - c.position[0]*d.position[1];
+        float den = (a.position[0]-b.position[0]) * (c.position[1]-d.position[1]) - (a.position[1]-b.position[1]) * (c.position[0]-d.position[0]);
+          
+  	
+  		float num = d1 * d2 - d3 * d4;
+    	float x_coord = num/den;
+  		
+  		float d5 = d.position[1]-c.position[1];
+        float d6 = b.position[1]-a.position[1];
+  
+  		num = d1 * d5 - d6*d4;
+		
+  		float y_coord = num/den;
+  		
+  		Vertex intersection_point;
+  		intersection_point.position = vec3(x_coord, y_coord, 1);
+  		return intersection_point;
+    #else
+        return a;
+    #endif
+}
+
+void sutherlandHodgmanClip(Polygon unclipped, Polygon clipWindow, out Polygon result) {
+    Polygon clipped;
+    copyPolygon(clipped, unclipped);
+	/*
+    This method given a polygon and a window return a clipped polygon, clipped against the
+    window.
+    */
+  
+    // Loop over the vertices of the clip window
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i >= clipWindow.vertexCount) break;
+
+        // Make a temporary copy of the current clipped polygon
+        Polygon oldClipped;
+        copyPolygon(oldClipped, clipped);
+
+        // Set the clipped polygon to be empty
+        makeEmptyPolygon(clipped);
+		
+      	Vertex wind1 = getWrappedPolygonVertex(clipWindow, i);
+        Vertex wind2 = getWrappedPolygonVertex(clipWindow, i+1);
+      
+        // Loop over the current clipped polygon
+        for (int j = 0; j < MAX_VERTEX_COUNT; ++j) {
+            if (j >= oldClipped.vertexCount) break;
+            
+            // Handle the j-th vertex of the clipped polygon. This should make use of the function 
+            // intersect() to be implemented above.
+          
+            #ifdef CLIPPING
+          		// get the two verteces of the polygon
+          		Vertex poli1 = getWrappedPolygonVertex(oldClipped,j);
+          		Vertex poli2 = getWrappedPolygonVertex(oldClipped, j+1);
+          		
+          		// let's identify the case 
+          		int type = getCrossType(poli1, poli2, wind1, wind2);
+          		
+          		if (type == LEAVING){
+                  /*
+                  if we are leaving meaning
+                  				  |	
+                  		.p_1------X---.p_2
+                  				  |
+                                  |
+                  we intersect once and store the intersection
+                  */
+                  
+                  Vertex intersect = intersect2D(poli1, poli2, wind1, wind2);
+                  appendVertexToPolygon(clipped, intersect);
+                }
+                else if(type == INSIDE){
+                  /*
+                  if both the vertex of the polygon are already inside the clipping
+                  area we add the second point
+								|                  
+                  .p_1---->.p_2 |
+                  				|
+                  */
+                  appendVertexToPolygon(clipped, poli2);
+                }
+                else if(type == ENTERING){
+                  /*
+                  if we are entering then we add bothe the intersection point and  
+                  the second point
+                  
+                  			|
+                  .p_2<-----X----.p_1
+                  			|
+                  */
+                  
+                  
+                  Vertex intersect = intersect2D(poli1, poli2, wind1, wind2);
+                  appendVertexToPolygon(clipped, intersect);
+                  appendVertexToPolygon(clipped, poli2);
+                }
+                else{
+                  // IF BOTH THE POINTS ARE OUTSIDE WE DON'T CARE (WE DON'T ADD ANYTHING :D )
+                }
+          	
+            #else
+                appendVertexToPolygon(clipped, getWrappedPolygonVertex(oldClipped, j));
+            #endif
+        }
+    }
+
+    // Copy the last version to the output
+    copyPolygon(result, clipped);
+}
+
+
+
+// Returns if a point is inside a polygon or not
+bool isPointInPolygon(vec2 point, Polygon polygon) {
+  
+    // Don't evaluate empty polygons
+    if (polygon.vertexCount == 0) return false;
+    // Check against each edge of the polygon
+    bool rasterise = true;
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i < polygon.vertexCount) {
+            #ifdef RASTERIZATION
+          		/*
+                In order to rasterize correctly we need to check whether a point
+                is inside or outside a polygon.
+                So for each side of the polygon we create a line (give the 2 points of 
+                the side) and we check on which side the given point in input lies.
+                We rasterise only if all the sides say : "yes the point is inside".
+                */      
+          		Vertex vertex1 = getWrappedPolygonVertex(polygon,i);
+                Vertex vertex2 = getWrappedPolygonVertex(polygon,i+1);
+          		if((edge(point,vertex1 ,vertex2 ) == OUTER_SIDE))
+                  	rasterise = false;
+          		
+            #else
+                rasterise = false;
+            #endif
+        }
+    }
+    return rasterise;
+}
+
+bool isPointOnPolygonVertex(vec2 point, Polygon polygon) {
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i < polygon.vertexCount) {
+          	ivec2 pixelDifference = ivec2(abs(polygon.vertices[i].position.xy - point) * vec2(viewport));
+          	int pointSize = viewport.x / 200;
+            if( pixelDifference.x <= pointSize && pixelDifference.y <= pointSize) {
+              return true;
+            }
+        }
+    }
+    return false;
+}
+
+float triangleArea(vec2 a, vec2 b, vec2 c) {
+    // https://en.wikipedia.org/wiki/Heron%27s_formula
+    float ab = length(a - b);
+    float bc = length(b - c);
+    float ca = length(c - a);
+    float s = (ab + bc + ca) / 2.0;
+    return sqrt(max(0.0, s * (s - ab) * (s - bc) * (s - ca)));
+}
+
+Vertex interpolateVertex(vec2 point, Polygon polygon) {
+    float weightSum = 0.0;
+    vec3 colorSum = vec3(0.0);
+    vec3 positionSum = vec3(0.0);
+    float depthSum = 0.0;
+  	
+  	/*
+    This method works only with triangles. Here I'm
+    computing the total area of the triangle, we need this
+    when we move to barycentric coordinates
+    */
+  	Vertex vertex1 = getWrappedPolygonVertex(polygon,0);
+    Vertex vertex2 = getWrappedPolygonVertex(polygon,1);
+    Vertex vertex3 = getWrappedPolygonVertex(polygon,2);
+  	vec2 point_1 = vec2(vertex1.position.x, vertex1.position.y);
+  	vec2 point_2 = vec2(vertex2.position.x, vertex2.position.y);
+    vec2 point_3 = vec2(vertex3.position.x, vertex3.position.y);
+  	float total_area = triangleArea(point_1, point_2, point_3);
+  
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i < polygon.vertexCount) {
+          /*
+          INTERPOLATION
+          For each vertex in the triangle we move to barycentric coordinates.
+          
+          					  .p1
+                             / |  \
+                            /  | A2\
+                           / A .c   \
+                          /  /    \  \ 
+                        .p2 --------.p3  
+          With a bit of immagination you can see 3 triangles inside a bigger triangle. 
+          To move to barycentric coordinates we need to compute the inner areas and normalize    
+          them by the total_area (prevoiusly computed). 
+          These normalized areas will be our weights in the equation. Note to determine 
+          the weight for a vertex we take the next area. For example if we want to determine
+          the weight for the color of the vertex p2 we don' use A but we use A2.
+          
+          Z-BUFFERING
+          For the z-buffering we use barycentric coordinates as well but here we need to 
+          perspective correct the z value. Meaning we don't use z like the color we use 1/z instead.
+          Note : if we don't use 1/z the change is almost invisible (in this case). 
+          */
+  
+          Vertex vertex1 = getWrappedPolygonVertex(polygon,i);
+          Vertex vertex2 = getWrappedPolygonVertex(polygon,i+1);
+          Vertex vertex3 = getWrappedPolygonVertex(polygon,i+2);
+          vec2 point_2 = vec2(vertex2.position.x, vertex2.position.y);
+          vec2 point_3 = vec2(vertex3.position.x, vertex3.position.y);
+          float area = triangleArea(point, point_2, point_3);
+         	
+          #ifdef ZBUFFERING
+          		positionSum -= (1.0/vertex1.position) * (area/total_area);
+          #endif
+          #ifdef INTERPOLATION
+          		depthSum  += (1.0/vertex1.position.z) * (area/total_area);
+          		colorSum  += (vertex1.color / vertex1.position.z) * (area/total_area);
+          #endif
+        }
+    }
+    Vertex result;
+  	#if defined(INTERPOLATION) && defined(ZBUFFERING)
+  		result.position = 1.0/(positionSum);
+  		result.color = (colorSum) * (1.0/depthSum);
+	#else
+  		#ifdef INTERPOLATION
+            result.position = vec3(point.x,point.y,1);
+            result.color = (colorSum) * (1.0/depthSum);
+        #endif
+        #ifdef ZBUFFERING
+            result.position = 1.0/(positionSum);
+            result.color = polygon.vertices[0].color;
+        #endif
+        #if !defined(INTERPOLATION) && !defined(ZBUFFERING)
+            result = polygon.vertices[0];
+        #endif
+    #endif
+    
+    return result;
+}
+
+// Projection part
+// Used to generate a projection matrix.
+mat4 computeProjectionMatrix() {
+    mat4 projectionMatrix = mat4(1);
+    
+    float aspect = float(viewport.x) / float(viewport.y);
+    float imageDistance = 0.5; 
+
+  	/*
+    This code was is a more sophisticated way to compute the projectiin matrix with a far
+    and near plane and with vertical and horizontal field of view.
+    
+    float far = 100.0;
+  	float height = float(viewport.y);
+  	float verticalFOV   = 2.0 * atan( height / ( 2.0 * imageDistance ) ) * ( 180.0 / 3.14 );
+    float horizontalFOV = 2.0 * atan( tan(verticalFOV/2.0) * aspect) * ( 180.0 / 3.14 ); // in degrees
+	*/
+    #ifdef PROJECTION
+        // Put your code here ((far+imageDistance)/(far-imageDistance))
+  		/*
+        vec4 first_column_projMat  = vec4((1.0/tan(horizontalFOV/2.0))/aspect ,0,0,0);
+        vec4 second_column_projMat = vec4(0,(1.0/tan(horizontalFOV/2.0)),0,0);
+        vec4 third_column_projMat  = vec4(0,0, (1.0/tan(horizontalFOV/2.0)), -1);
+        vec4 fourth_column_projMat = vec4(0,0, -1, 1);
+		*/
+
+  		projectionMatrix[1][1] = aspect;
+  		projectionMatrix[2][3] = -imageDistance;
+
+    #endif
+  
+    return projectionMatrix;
+}
+
+// Used to generate a simple "look-at" camera. 
+mat4 computeViewMatrix(vec3 ViewReferencePoint, vec3 TargetPoint, vec3 ViewUpVector) {
+    mat4 viewMatrix = mat4(1); // matrix 4x4 with 1's on the diagonal
+
+    #ifdef PROJECTION
+        // Put your code here
+        vec3 ViewPlaneNormal = (ViewReferencePoint-TargetPoint)/(length(ViewReferencePoint-TargetPoint)) ;
+        vec3 n = ViewPlaneNormal/length(ViewPlaneNormal);
+        vec3 u = (cross(n, ViewUpVector))/(length(cross(n, ViewUpVector)));
+        vec3 v = cross(u,n);
+
+		// we need to transpose the matrix from the slides   		
+  		vec4 first_column_viewMat  = vec4(u[0], v[0], n[0], 0);
+        vec4 second_column_viewMat = vec4(u[1], v[1], n[1], 0);
+        vec4 third_column_viewMat  = vec4(u[2], v[2], n[2], 0);
+  		vec4 fourth_column_viewMat = vec4(-dot(ViewReferencePoint,u), -dot(ViewReferencePoint,v), -dot(ViewReferencePoint,n), 1);
+        
+  		viewMatrix[0] = first_column_viewMat;
+        viewMatrix[1] = second_column_viewMat;
+        viewMatrix[2] = third_column_viewMat;
+		viewMatrix[3] = fourth_column_viewMat;
+        return viewMatrix;
+    #endif
+        return viewMatrix;
+}
+
+vec3 getCameraPosition() {  
+    #ifdef ANIMATION
+        // time_fake is a variable created to debug the z-buffering 
+  
+  		float time_fake = 1.5;
+        return vec3(0, 0, 10)*sin(time) + vec3(10, 0, 0)*cos(time);
+    #else
+        return vec3(0, 0, 10);
+    #endif
+}
+
+// Takes a single input vertex and projects it using the input view and projection matrices
+vec3 projectVertexPosition(vec3 position) {
+
+    // Set the parameters for the look-at camera.
+  	
+    vec3 TargetPoint = vec3(0, 0, 0);
+  	vec3 ViewReferencePoint = getCameraPosition();
+    vec3 ViewUpVector = vec3(0, 1, 0);
+    // ViewPlaneNormal (VPN)
+    // uvn Viewing-Coordinate Reference Frame
+  
+    // Compute the view matrix.
+    mat4 viewMatrix = computeViewMatrix(ViewReferencePoint, TargetPoint, ViewUpVector);
+
+    // Compute the projection matrix.
+    mat4 projectionMatrix = computeProjectionMatrix();
+  
+    #ifdef PROJECTION
+        // we normalize at the end by the fourth dimension.
+        vec4 x = projectionMatrix*viewMatrix*vec4(position,1);
+  		return vec3(x[0]/x[3],x[1]/x[3],x[2]/x[3]);
+    #else
+        return position;
+    #endif
+}
+
+// Projects all the vertices of a polygon
+void projectPolygon(inout Polygon projectedPolygon, Polygon polygon) {
+    copyPolygon(projectedPolygon, polygon);
+    for (int i = 0; i < MAX_VERTEX_COUNT; ++i) {
+        if (i < polygon.vertexCount) {
+            projectedPolygon.vertices[i].position = projectVertexPosition(polygon.vertices[i].position);
+        }
+    }
+}
+
+// Draws a polygon by projecting, clipping, ratserizing and interpolating it
+void drawPolygon(
+  vec2 point, 
+  Polygon clipWindow, 
+  Polygon oldPolygon, 
+  inout vec3 color, 
+  inout float depth)
+{
+    Polygon projectedPolygon;
+    projectPolygon(projectedPolygon, oldPolygon);  
+  
+    Polygon clippedPolygon;
+    sutherlandHodgmanClip(projectedPolygon, clipWindow, clippedPolygon);
+
+    if (isPointInPolygon(point, clippedPolygon)) {
+      
+        Vertex interpolatedVertex = interpolateVertex(point, projectedPolygon);
+        #if defined(ZBUFFERING)    
+            // we update the color and the position only if they're closer
+			if(depth >= interpolatedVertex.position.z){
+      			color = interpolatedVertex.color;
+              	depth = interpolatedVertex.position.z;
+            }
+        #else
+              // If the z-buffering flag is not active we always update the color
+      		  // and the depth.
+              color = interpolatedVertex.color;
+              depth = interpolatedVertex.position.z;      
+        #endif
+   }
+  
+   if (isPointOnPolygonVertex(point, clippedPolygon)) {
+        color = vec3(1);
+   }
+}
+
+// Main function calls
+
+void drawScene(vec2 pixelCoord, inout vec3 color) {
+    color = vec3(0.3, 0.3, 0.3);
+  
+  	// Convert from GL pixel coordinates 0..N-1 to our screen coordinates -1..1
+    vec2 point = 2.0 * pixelCoord / vec2(viewport) - vec2(1.0);
+
+    Polygon clipWindow;
+    clipWindow.vertices[0].position = vec3(-0.65,  0.95, 1.0);
+    clipWindow.vertices[1].position = vec3( 0.65,  0.75, 1.0);
+    clipWindow.vertices[2].position = vec3( 0.75, -0.65, 1.0);
+    clipWindow.vertices[3].position = vec3(-0.75, -0.85, 1.0);
+    clipWindow.vertexCount = 4;
+  
+  	// Draw the area outside the clip region to be dark
+    color = isPointInPolygon(point, clipWindow) ? vec3(0.5) : color;
+
+    const int triangleCount = 2;
+    Polygon triangles[triangleCount];
+  
+    triangles[0].vertices[0].position = vec3(-2, -2, 0.0);
+    triangles[0].vertices[1].position = vec3(4, 0, 3.0);
+    triangles[0].vertices[2].position = vec3(-1, 2, 0.0);
+    triangles[0].vertices[0].color = vec3(1.0, 0.5, 0.2);
+    triangles[0].vertices[1].color = vec3(0.8, 0.8, 0.8);
+    triangles[0].vertices[2].color = vec3(0.2, 0.5, 1.0);
+    triangles[0].vertexCount = 3;
+  
+    triangles[1].vertices[0].position = vec3(3.0, 2.0, -2.0);
+  	triangles[1].vertices[2].position = vec3(0.0, -2.0, 3.0);
+    triangles[1].vertices[1].position = vec3(-1.0, 2.0, 4.0);
+    triangles[1].vertices[1].color = vec3(0.2, 1.0, 0.1);
+    triangles[1].vertices[2].color = vec3(1.0, 1.0, 1.0);
+    triangles[1].vertices[0].color = vec3(0.1, 0.2, 1.0);
+    triangles[1].vertexCount = 3;
+
+    float depth = 10000.0;
+    // Project and draw all the triangles
+    for (int i = 0; i < triangleCount; i++) {
+      
+        drawPolygon(point, clipWindow, triangles[i], color, depth);
+    }   
+}
+
+void main() {
+    drawScene(gl_FragCoord.xy, gl_FragColor.rgb);
+    gl_FragColor.a = 1.0;
+}`,
+		description: ``,
+		wrapFunctionStart: ``,
+		wrapFunctionEnd: ``
+	});
+
+	UI.tabs.push(
+		{
+		visible: false,
+		type: `x-shader/x-vertex`,
+		title: `RasterizationDemoTextureVS - GL`,
+		id: `RasterizationDemoTextureVS`,
+		initialValue: `attribute vec3 position;
+    attribute vec2 textureCoord;
+
+    uniform mat4 modelViewMatrix;
+    uniform mat4 projectionMatrix;
+
+    varying highp vec2 vTextureCoord;
+  
+    void main(void) {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vTextureCoord = textureCoord;
+    }
+`,
+		description: ``,
+		wrapFunctionStart: ``,
+		wrapFunctionEnd: ``
+	});
+
+	UI.tabs.push(
+		{
+		visible: false,
+		type: `x-shader/x-vertex`,
+		title: `RasterizationDemoVS - GL`,
+		id: `RasterizationDemoVS`,
+		initialValue: `attribute vec3 position;
+
+    uniform mat4 modelViewMatrix;
+    uniform mat4 projectionMatrix;
+
+    void main(void) {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+`,
+		description: ``,
+		wrapFunctionStart: ``,
+		wrapFunctionEnd: ``
+	});
+
+	UI.tabs.push(
+		{
+		visible: false,
+		type: `x-shader/x-fragment`,
+		title: `RasterizationDemoTextureFS - GL`,
+		id: `RasterizationDemoTextureFS`,
+		initialValue: `
+        varying highp vec2 vTextureCoord;
+
+        uniform sampler2D uSampler;
+
+        void main(void) {
+            gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+        }
+`,
+		description: ``,
+		wrapFunctionStart: ``,
+		wrapFunctionEnd: ``
+	});
+
+	 return UI; 
+}//!setup
+
+var gl;
+function initGL(canvas) {
+    try {
+        gl = canvas.getContext("webgl");
+        gl.viewportWidth = canvas.width;
+        gl.viewportHeight = canvas.height;
+    } catch (e) {
+    }
+    if (!gl) {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+
+function evalJS(id) {
+    var jsScript = document.getElementById(id);
+    eval(jsScript.innerHTML);
+}
+
+function getShader(gl, id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+
+    var shader;
+    if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+    } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+    } else {
+        return null;
+    }
+
+    gl.shaderSource(shader, str);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+    }
+
+    return shader;
+}
+
+function RasterizationDemo() {
+}
+
+RasterizationDemo.prototype.initShaders = function() {
+
+    this.shaderProgram = gl.createProgram();
+
+    gl.attachShader(this.shaderProgram, getShader(gl, "RasterizationDemoVS"));
+    gl.attachShader(this.shaderProgram, getShader(gl, "RasterizationDemoFS"));
+    gl.linkProgram(this.shaderProgram);
+
+    if (!gl.getProgramParameter(this.shaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(this.shaderProgram);
+
+    this.shaderProgram.vertexPositionAttribute = gl.getAttribLocation(this.shaderProgram, "position");
+    gl.enableVertexAttribArray(this.shaderProgram.vertexPositionAttribute);
+
+    this.shaderProgram.projectionMatrixUniform = gl.getUniformLocation(this.shaderProgram, "projectionMatrix");
+    this.shaderProgram.modelviewMatrixUniform = gl.getUniformLocation(this.shaderProgram, "modelViewMatrix");
+}
+
+RasterizationDemo.prototype.initTextureShaders = function() {
+
+    this.textureShaderProgram = gl.createProgram();
+
+    gl.attachShader(this.textureShaderProgram, getShader(gl, "RasterizationDemoTextureVS"));
+    gl.attachShader(this.textureShaderProgram, getShader(gl, "RasterizationDemoTextureFS"));
+    gl.linkProgram(this.textureShaderProgram);
+
+    if (!gl.getProgramParameter(this.textureShaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(this.textureShaderProgram);
+
+    this.textureShaderProgram.vertexPositionAttribute = gl.getAttribLocation(this.textureShaderProgram, "position");
+    gl.enableVertexAttribArray(this.textureShaderProgram.vertexPositionAttribute);
+
+    this.textureShaderProgram.textureCoordAttribute = gl.getAttribLocation(this.textureShaderProgram, "textureCoord");
+    gl.enableVertexAttribArray(this.textureShaderProgram.textureCoordAttribute);
+    //gl.vertexAttribPointer(this.textureShaderProgram.textureCoordAttribute, 2, gl.FLOAT, false, 0, 0);
+
+    this.textureShaderProgram.projectionMatrixUniform = gl.getUniformLocation(this.textureShaderProgram, "projectionMatrix");
+    this.textureShaderProgram.modelviewMatrixUniform = gl.getUniformLocation(this.textureShaderProgram, "modelViewMatrix");
+}
+
+RasterizationDemo.prototype.initBuffers = function() {
+    this.triangleVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleVertexPositionBuffer);
+    
+    var vertices = [
+         -1.0,  -1.0,  0.0,
+         -1.0,   1.0,  0.0,
+          1.0,   1.0,  0.0,
+
+         -1.0,  -1.0,  0.0,
+          1.0,  -1.0,  0.0,
+          1.0,   1.0,  0.0,
+     ];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    this.triangleVertexPositionBuffer.itemSize = 3;
+    this.triangleVertexPositionBuffer.numItems = 3 * 2;
+
+    this.textureCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+
+    var textureCoords = [
+        0.0,  0.0,
+        0.0,  1.0,
+        1.0,  1.0,
+
+        0.0,  0.0,
+        1.0,  0.0,
+        1.0,  1.0
+    ];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+    this.textureCoordBuffer.itemSize = 2;
+}
+
+function getTime() {  
+	var d = new Date();
+	return d.getMinutes() * 60.0 + d.getSeconds() + d.getMilliseconds() / 1000.0;
+}
+
+
+RasterizationDemo.prototype.initTextureFramebuffer = function() {
+    // create off-screen framebuffer
+    this.framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+    this.framebuffer.width = this.prerender_width;
+    this.framebuffer.height = this.prerender_height;
+
+    // create RGB texture
+    this.framebufferTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.framebuffer.width, this.framebuffer.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);//LINEAR_MIPMAP_NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    //gl.generateMipmap(gl.TEXTURE_2D);
+
+    // create depth buffer
+    this.renderbuffer = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.renderbuffer);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, this.framebuffer.width, this.framebuffer.height);
+
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.framebufferTexture, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.renderbuffer);
+
+    // reset state
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+RasterizationDemo.prototype.drawScene = function() {
+            
+    gl.bindFramebuffer(gl.FRAMEBUFFER, env.framebuffer);
+    gl.useProgram(this.shaderProgram);
+    gl.viewport(0, 0, this.prerender_width, this.prerender_height);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+        var perspectiveMatrix = new J3DIMatrix4();  
+        perspectiveMatrix.setUniform(gl, this.shaderProgram.projectionMatrixUniform, false);
+
+        var modelViewMatrix = new J3DIMatrix4();    
+        modelViewMatrix.setUniform(gl, this.shaderProgram.modelviewMatrixUniform, false);
+
+        gl.uniform2iv(gl.getUniformLocation(this.shaderProgram, "viewport"), [getRenderTargetWidth(), getRenderTargetHeight()]);
+            
+		gl.uniform1f(gl.getUniformLocation(this.shaderProgram, "time"), getTime());  
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleVertexPositionBuffer);
+        gl.vertexAttribPointer(this.shaderProgram.vertexPositionAttribute, this.triangleVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.vertexAttribPointer(this.textureShaderProgram.textureCoordAttribute, this.textureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+        
+        gl.drawArrays(gl.TRIANGLES, 0, this.triangleVertexPositionBuffer.numItems);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.useProgram(this.textureShaderProgram);
+    gl.viewport(0, 0, this.render_width, this.render_height);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+        var perspectiveMatrix = new J3DIMatrix4();  
+        perspectiveMatrix.setUniform(gl, this.textureShaderProgram.projectionMatrixUniform, false);
+
+        var modelViewMatrix = new J3DIMatrix4();    
+        modelViewMatrix.setUniform(gl, this.textureShaderProgram.modelviewMatrixUniform, false);
+
+        gl.bindTexture(gl.TEXTURE_2D, this.framebufferTexture);
+        gl.uniform1i(gl.getUniformLocation(this.textureShaderProgram, "uSampler"), 0);
+            
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleVertexPositionBuffer);
+        gl.vertexAttribPointer(this.textureShaderProgram.vertexPositionAttribute, this.triangleVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.textureCoordBuffer);
+        gl.vertexAttribPointer(this.textureShaderProgram.textureCoordAttribute, this.textureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+        
+        gl.drawArrays(gl.TRIANGLES, 0, this.triangleVertexPositionBuffer.numItems);
+}
+
+RasterizationDemo.prototype.run = function() {
+
+    this.render_width     = 800;
+    this.render_height    = 400;
+
+    this.prerender_width  = this.render_width;
+    this.prerender_height = this.render_height;
+
+    this.initTextureFramebuffer();
+    this.initShaders();
+    this.initTextureShaders();
+    this.initBuffers();
+};
+
+function init() {   
+    env = new RasterizationDemo();
+
+    return env;
+}
+
+function compute(canvas)
+{
+    env.run();
+    env.drawScene();
+}
+
