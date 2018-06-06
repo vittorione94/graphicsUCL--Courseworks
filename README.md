@@ -9,15 +9,15 @@ Are executable at the website :  http://cg.cs.ucl.ac.uk/ hosted by the Universit
 
 # Results:
 ## Raytracing
-![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/Screen Shot 2018-06-06 at 16.45.12.png)
+![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/raytrace)
 
 ## Rasterization
-![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/Screen Shot 2018-06-06 at 16.47.16.png)
+![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/raster)
 
 ## Pathtracing
 
 At zero iteration:
-![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/Screen Shot 2018-06-06 at 16.45.31.png)
+![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/path1)
 
 At 700 iterations:
-![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/Screen Shot 2018-06-06 at 16.46.54.png)
+![alt text](https://github.com/vittorione94/graphicsUCL--Courseworks.git/path2)
